@@ -1,0 +1,695 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "CloudFormation Templates for Serverless CSV Batch Processing Architecture"
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for the VPC
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: CIDR block for the public subnet
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for the first private subnet
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.0.2.0/24
+    Description: CIDR block for the second private subnet
+  PrivateSubnet3Cidr:
+    Type: String
+    Default: 10.0.3.0/24
+    Description: CIDR block for the third private subnet
+  EC2InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 instance type for temporary build instance
+  EC2InstanceAmi:
+    Description: InstanceAMI
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+  KeyName:
+    Type: String
+    Default: ec2-keypair    
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+  DockerImageName:
+    Type: String
+    Default: batch-processor
+    Description: Name for the Docker image
+
+Resources:
+
+  # VPC and Network Configuration
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-VPC'
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-IGW'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Public Subnet Configuration
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Public-Subnet'
+
+  # Private Subnets Configuration
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Private-Subnet-1'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Private-Subnet-2'
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet3Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Private-Subnet-3'
+
+  # Route Tables Configuration
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Public-RT'
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  # NAT Gateway Configuration
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-NAT-Gateway'
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Private-RT'
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet3
+
+  # Security Groups
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for temporary EC2 builder instance
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-EC2-SG'
+
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for AWS Batch
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Batch-SG'
+
+  # S3 Buckets Configuration
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'sourcedataforbatchjob-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+
+  S3EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref SourceBucket
+          object:
+            key:
+              - prefix: ""
+              - suffix: ".csv"
+      Targets:
+        - Arn: !GetAtt TriggerLambdaFunction.Arn
+          Id: InvokeLambdaOnCSVUpload
+
+  SourceBucketLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerLambdaFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3EventRule.Arn
+
+  DestinationBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'processeddatafrombatchjob-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ECR Repository
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref DockerImageName
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EmptyOnDelete: true
+
+  # IAM Roles
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser'
+        - 'arn:aws:iam::aws:policy/AmazonEC2FullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-EC2-Role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Lambda-Role'
+
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-Lambda-Policy'
+      Roles:
+        - !Ref LambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'batch:SubmitJob'
+            Resource: 
+            - !Sub 'arn:aws:batch:${AWS::Region}:${AWS::AccountId}:job-definition/${AWS::StackName}-job-def*'
+            - !Sub 'arn:aws:batch:${AWS::Region}:${AWS::AccountId}:job-queue/${AWS::StackName}-job-queue'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:ListBucket'
+              - 's3:GetBucketNotification'
+            Resource: 
+              - !GetAtt SourceBucket.Arn
+              - !Sub '${SourceBucket.Arn}/*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: 
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-trigger-batch-job:*'
+
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Batch-Service-Role'
+
+  BatchJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Batch-Job-Role'
+
+  BatchJobExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Batch-Job-Execution-Role'
+
+  EC2KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Ref KeyName
+      KeyFormat: pem
+      KeyType: rsa
+      Tags: 
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-EC2-Key-Pair'
+
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: EC2Instance
+    Properties:
+      Handle: !Ref WaitHandle
+      Timeout: '120'
+      Count: 1
+
+  # Temporary EC2 Instance for Docker Build
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: ECRRepository
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref PublicSubnet
+      KeyName: !Ref EC2KeyPair
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !Ref EC2InstanceAmi
+      InstanceInitiatedShutdownBehavior: terminate
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          dnf update -y
+          dnf install -y docker git aws-cli
+          systemctl start docker
+          usermod -a -G docker ec2-user
+          mkdir -p /home/ec2-user/docker-build
+          cat > /home/ec2-user/docker-build/Dockerfile << 'EOF'
+          FROM python:3.9-slim
+          
+          WORKDIR /app
+          
+          COPY . .
+          
+          RUN pip install --no-cache-dir pandas boto3
+          
+          CMD ["python", "process.py"]
+          EOF
+          
+          cat > /home/ec2-user/docker-build/process.py << 'EOF'
+          import os
+          import pandas as pd
+          import boto3
+          from datetime import datetime
+          
+          def process_csv(input_key, output_key):
+              s3 = boto3.client('s3')
+              source_bucket = os.environ['SOURCE_BUCKET']
+              dest_bucket = os.environ['DESTINATION_BUCKET']
+              
+              local_input = '/tmp/input.csv'
+              s3.download_file(source_bucket, input_key, local_input)
+              
+              df = pd.read_csv(local_input)
+              df['processed_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+              
+              local_output = '/tmp/output.csv'
+              df.to_csv(local_output, index=False)
+              s3.upload_file(local_output, dest_bucket, output_key)
+              
+              return {
+                  'source_file': input_key,
+                  'destination_file': output_key,
+                  'row_count': len(df)
+              }
+          
+          def main():
+              input_key = os.environ['INPUT_KEY']
+              filename = os.path.basename(input_key)
+              output_key = f"processed/{filename}"
+              result = process_csv(input_key, output_key)
+          
+          if __name__ == '__main__':
+              main()
+          EOF
+          
+          cd /home/ec2-user/docker-build
+          docker build -t ${DockerImageName} .
+          aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          docker tag ${DockerImageName}:latest ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${DockerImageName}:latest
+          docker push ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${DockerImageName}:latest
+
+          curl -X PUT -H 'Content-Type:' --data-binary '{"Status": "SUCCESS", "Reason": "Docker image pushed successfully", "UniqueId": "EC2Instance", "Data": "Done"}' "${WaitHandle}"
+          sleep 2
+
+          # Self-terminate after pushing the Docker image
+          shutdown -h now
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Builder-Instance'
+
+  # Lambda to Trigger Batch Job
+  TriggerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-trigger-batch-job'
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+
+          def handler(event, context):
+              # Event management
+              if event['detail-type'] == "Object Created":
+                  bucket = event['detail']['bucket']['name']
+                  key = event['detail']['object']['key']
+
+                  # Filter if not csv
+                  if not key.lower().endswith('.csv'):
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps('File non CSV, nessuna azione')
+                      }
+                  else:
+                      # Submit the batch job
+                      batch = boto3.client('batch')
+                      job_name = 'process-csv-job'
+                      job_queue = os.environ['JOB_QUEUE']
+                      job_definition = os.environ['JOB_DEFINITION']
+                      
+                      response = batch.submit_job(
+                          jobName=job_name,
+                          jobQueue=job_queue,
+                          jobDefinition=job_definition,
+                          containerOverrides={
+                              'environment': [
+                                  {
+                                      'name': 'SOURCE_BUCKET',
+                                      'value': bucket
+                                  },
+                                  {
+                                      'name': 'DESTINATION_BUCKET',
+                                      'value': os.environ['DESTINATION_BUCKET']
+                                  },
+                                  {
+                                      'name': 'INPUT_KEY',
+                                      'value': key
+                                  }
+                              ]
+                          }
+                      )
+
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps("Successfully submitted batch job: " + response['jobId'])
+                      }
+              else:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps('Evento non valido')
+                  }
+
+      Runtime: python3.9
+      Timeout: 60
+      Environment:
+        Variables:
+          JOB_QUEUE: !Ref BatchJobQueue
+          JOB_DEFINITION: !Ref BatchJobDefinition
+          DESTINATION_BUCKET: !Sub 'processeddatafrombatchjob-${AWS::Region}'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-Trigger-Lambda'
+
+  # AWS Batch Configuration
+  BatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeEnvironmentName: !Sub '${AWS::StackName}-compute-env'
+      ComputeResources:
+        Type: FARGATE_SPOT
+        MaxvCpus: 4
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+        Subnets:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+          - !Ref PrivateSubnet3
+      State: ENABLED
+      Tags:
+        Name: !Sub '${AWS::StackName}-Batch-Compute-Env'
+
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: !Sub '${AWS::StackName}-job-queue'
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref BatchComputeEnvironment
+      State: ENABLED
+      Tags:
+        Name: !Sub '${AWS::StackName}-Batch-Job-Queue'
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    DependsOn: EC2Instance
+    Properties:
+      JobDefinitionName: !Sub '${AWS::StackName}-job-def'
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      ContainerProperties:
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${DockerImageName}:latest'
+        FargatePlatformConfiguration:
+          PlatformVersion: LATEST
+        ResourceRequirements:
+          - Type: VCPU
+            Value: '1'
+          - Type: MEMORY
+            Value: '2048'
+        ExecutionRoleArn: !GetAtt BatchJobExecutionRole.Arn
+        JobRoleArn: !GetAtt BatchJobRole.Arn
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref BatchLogGroup
+            awslogs-region: !Ref 'AWS::Region'
+            awslogs-stream-prefix: batch
+      Tags:
+        Name: !Sub '${AWS::StackName}-Batch-Job-Definition'
+      RetryStrategy:
+        Attempts: 3
+
+  # CloudWatch Logs
+  BatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/batch/${AWS::StackName}'
+      RetentionInDays: 1
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-trigger-batch-job'
+      RetentionInDays: 1
+
+  # CloudWatch Alarms
+  BatchJobAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-BatchJobFailure'
+      AlarmDescription: 'Alarm if batch job fails'
+      Namespace: 'AWS/Batch'
+      MetricName: 'FailedJobsCount'
+      Dimensions:
+        - Name: JobQueue
+          Value: !Ref BatchJobQueue
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  LambdaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-LambdaErrors'
+      AlarmDescription: 'Alarm if lambda has errors'
+      Namespace: 'AWS/Lambda'
+      MetricName: 'Errors'
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TriggerLambdaFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
