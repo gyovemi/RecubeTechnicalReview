@@ -1,3 +1,5 @@
+![Batch drawio](https://github.com/user-attachments/assets/53c2e8a5-e60e-48b6-8c4e-9b101a3cbda9)
+
 # Serverless Architecture for CSV Batch Processing
 
 This project implements an AWS serverless architecture for automatic processing of CSV files using AWS Batch, EventBridge, Lambda, and Docker containers.
