@@ -1,0 +1,16 @@
+[
+  {
+    "ParameterKey":"VpcCidr",
+    "ParameterValue":"10.0.0.0/16",
+    "UsePreviousValue": true
+  },
+  {
+    "ParameterKey":"EC2InstanceType",
+    "ParameterValue":"t2.micro",
+    "UsePreviousValue": false
+  },
+  {
+    "ParameterKey":"EC2InstanceAmi",
+    "ParameterValue":"/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+  },
+]
