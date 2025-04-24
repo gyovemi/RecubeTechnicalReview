@@ -40,6 +40,7 @@ To deploy this architecture, run:
 aws cloudformation create-stack \
   --stack-name csv-batch-processor \
   --template-body file://template.yaml \
+  --parameters file://parameters.json \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
